@@ -122,7 +122,7 @@ module Pay
           amount: amount,
           currency: "usd",
           customer: processor_id || api_record.id,
-          expand: ["latest_charge.refunds"],
+          expand: ["latest_charge.balance_transaction", "latest_charge.refunds.balance_transaction"],
           return_url: root_url
         }.merge(options)
 

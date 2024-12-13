@@ -1,11 +1,11 @@
 module Pay
   module Stripe
     class Charge < Pay::Charge
-      store_accessor :data, :stripe_receipt_url
+      store_accessor :data, :stripe_receipt_url, :balance_transaction
 
       def self.sync(charge_id, object: nil, stripe_account: nil, try: 0, retries: 1)
         # Skip loading the latest charge details from the API if we already have it
-        object ||= ::Stripe::Charge.retrieve({id: charge_id, expand: ["invoice.total_discount_amounts.discount", "invoice.total_tax_amounts.tax_rate", "refunds"]}, {stripe_account: stripe_account}.compact)
+        object ||= ::Stripe::Charge.retrieve({id: charge_id, expand: ["invoice.total_discount_amounts.discount", "invoice.total_tax_amounts.tax_rate", "balance_transaction", "refunds.balance_transaction"]}, {stripe_account: stripe_account}.compact)
         if object.customer.blank?
           Rails.logger.debug "Stripe Charge #{object.id} does not have a customer"
           return
@@ -17,19 +17,26 @@ module Pay
           return
         end
 
+        # Save the balance transaction to the json column
         refunds = []
         object.refunds.auto_paging_each { |refund| refunds << refund }
 
+        # Set these from the balance transaction which converts to the correct currency
+        currency = object.balance_transaction.currency
+        amount = object.balance_transaction.amount
+        amount_captured = object.balance_transaction.amount
+        amount_refunded = refunds.sum { _1.balance_transaction.amount }
+
         payment_method = object.payment_method_details.try(object.payment_method_details.type)
         attrs = {
-          amount: object.amount,
-          amount_captured: object.amount_captured,
-          amount_refunded: object.amount_refunded,
+          amount: amount,
+          amount_captured: amount_captured,
+          amount_refunded: amount_refunded,
           application_fee_amount: object.application_fee_amount,
           bank: payment_method.try(:bank_name) || payment_method.try(:bank), # eps, fpx, ideal, p24, acss_debit, etc
           brand: payment_method.try(:brand)&.capitalize,
           created_at: Time.at(object.created),
-          currency: object.currency,
+          currency: currency,
           discounts: [],
           exp_month: payment_method.try(:exp_month).to_s,
           exp_year: payment_method.try(:exp_year).to_s,
@@ -41,7 +48,8 @@ module Pay
           stripe_account: pay_customer.stripe_account,
           stripe_receipt_url: object.receipt_url,
           total_tax_amounts: [],
-          refunds: refunds.sort_by! { |r| r["created"] }
+          refunds: refunds.sort_by! { |r| r["created"] },
+          balance_transaction: object.balance_transaction
         }
 
         # Associate charge with subscription if we can
